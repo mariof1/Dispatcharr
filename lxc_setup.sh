@@ -193,6 +193,24 @@ start_containers() {
     sleep 5
 }
 
+# Get host IP address
+get_host_ip() {
+    # Try to get the primary IP address (not localhost)
+    local ip=$(hostname -I | awk '{print $1}')
+    
+    # Fallback to ip command if hostname doesn't work
+    if [ -z "$ip" ]; then
+        ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+')
+    fi
+    
+    # Final fallback to localhost
+    if [ -z "$ip" ]; then
+        ip="localhost"
+    fi
+    
+    echo "$ip"
+}
+
 # Show status
 show_status() {
     cd "${DOCKER_DIR}"
@@ -200,15 +218,17 @@ show_status() {
     log_info "Container status:"
     run_docker "docker compose -f docker-compose.lxc.yml ps"
     
+    local host_ip=$(get_host_ip)
+    
     echo ""
     log_info "==================================================="
     log_info "Dispatcharr is now running!"
     log_info "==================================================="
-    log_info "Web Interface:    http://localhost:9191"
-    log_info "Frontend Dev:     http://localhost:5656"
-    log_info "WebSocket:        http://localhost:8001"
-    log_info "Redis Commander:  http://localhost:8081"
-    log_info "pgAdmin:          http://localhost:8082"
+    log_info "Web Interface:    http://${host_ip}:9191"
+    log_info "Frontend Dev:     http://${host_ip}:5656"
+    log_info "WebSocket:        http://${host_ip}:8001"
+    log_info "Redis Commander:  http://${host_ip}:8081"
+    log_info "pgAdmin:          http://${host_ip}:8082"
     log_info "                  (admin@admin.com / admin)"
     log_info "==================================================="
     echo ""
