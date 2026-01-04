@@ -2,6 +2,12 @@ import requests
 import logging
 import traceback
 import json
+import hashlib
+import os
+import time
+import uuid
+
+from core.utils import RedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +62,66 @@ class Client:
             return f"{protocol}://{domain}"
         return url
 
+    def _get_lock_key(self):
+        # Keep Redis keys short and safe; hash server_url+username
+        raw = f"{self.server_url}|{self.username}".encode("utf-8")
+        digest = hashlib.sha1(raw).hexdigest()
+        return f"xc_api_lock:{digest}"
+
+    def _acquire_api_lock(self, wait_seconds=60, lock_ttl_seconds=120):
+        """Best-effort cross-process lock to serialize requests per XC account.
+
+        Some providers enforce low max_connections and will reset/502 concurrent requests.
+        If Redis isn't available, this returns None and requests proceed without locking.
+        """
+        redis_client = RedisClient.get_client()
+        if not redis_client:
+            return None
+
+        lock_key = self._get_lock_key()
+        token = str(uuid.uuid4())
+        deadline = time.time() + max(0, wait_seconds)
+
+        while True:
+            acquired = redis_client.set(lock_key, token, nx=True, ex=lock_ttl_seconds)
+            if acquired:
+                return token
+
+            if time.time() >= deadline:
+                return None
+
+            time.sleep(0.5)
+
+    def _release_api_lock(self, token):
+        redis_client = RedisClient.get_client()
+        if not redis_client or not token:
+            return
+
+        lock_key = self._get_lock_key()
+        lua_script = """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            return redis.call('del', KEYS[1])
+        else
+            return 0
+        end
+        """
+        try:
+            release_lock = redis_client.register_script(lua_script)
+            release_lock(keys=[lock_key], args=[token])
+        except Exception:
+            # Never fail the request path due to lock cleanup issues
+            return
+
     def _make_request(self, endpoint, params=None):
         """Make request with detailed error handling"""
+        lock_wait = int(os.environ.get("DISPATCHARR_XC_LOCK_WAIT", "60"))
+        lock_ttl = int(os.environ.get("DISPATCHARR_XC_LOCK_TTL", "120"))
+        lock_token = self._acquire_api_lock(wait_seconds=lock_wait, lock_ttl_seconds=lock_ttl)
+        if lock_token is None:
+            logger.warning(
+                "Proceeding without XC API lock (timeout waiting for lock). "
+                "Provider may reset concurrent requests."
+            )
         try:
             url = f"{self.server_url}/{endpoint}"
             logger.debug(f"XC API Request: {url} with params: {params}")
@@ -112,6 +176,9 @@ class Client:
             logger.error(f"XC API Unexpected error: {str(e)}")
             logger.error(traceback.format_exc())
             raise
+        finally:
+            if lock_token is not None:
+                self._release_api_lock(lock_token)
 
     def authenticate(self):
         """Authenticate and validate server response"""
