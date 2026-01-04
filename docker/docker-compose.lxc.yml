@@ -9,6 +9,8 @@ services:
     volumes:
       - ../:/app
       - ./data:/data
+      # Use named volume for node_modules to avoid permission issues
+      - dispatcharr_node_modules:/app/frontend/node_modules
     environment:
       - DISPATCHARR_ENV=dev
       - REDIS_HOST=localhost
@@ -45,3 +47,4 @@ services:
 
 volumes:
   dispatcharr_dev_pgadmin:
+  dispatcharr_node_modules:
