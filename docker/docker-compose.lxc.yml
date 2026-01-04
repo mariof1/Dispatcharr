@@ -1,0 +1,47 @@
+services:
+  dispatcharr:
+    image: ghcr.io/dispatcharr/dispatcharr:base
+    container_name: dispatcharr_dev
+    ports:
+      - 5656:5656
+      - 9191:9191
+      - 8001:8001
+    volumes:
+      - ../:/app
+      - ./data:/data
+    environment:
+      - DISPATCHARR_ENV=dev
+      - REDIS_HOST=localhost
+      - CELERY_BROKER_URL=redis://localhost:6379/0
+      - DISPATCHARR_LOG_LEVEL=debug
+    # LXC compatibility: disable security options that require host privileges
+    security_opt:
+      - apparmor:unconfined
+    # Don't try to modify kernel parameters in LXC
+    sysctls: {}
+
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    volumes:
+      - dispatcharr_dev_pgadmin:/var/lib/pgadmin
+    ports:
+      - 8082:80
+    security_opt:
+      - apparmor:unconfined
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=dispatcharr:dispatcharr:6379:0
+      - TRUST_PROXY=true
+      - ADDRESS=0.0.0.0
+    ports:
+      - 8081:8081
+    security_opt:
+      - apparmor:unconfined
+
+volumes:
+  dispatcharr_dev_pgadmin:

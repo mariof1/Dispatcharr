@@ -98,9 +98,9 @@ stop_existing_containers() {
     
     cd "${DOCKER_DIR}"
     
-    if docker compose -f docker-compose.dev.yml ps -q 2>/dev/null | grep -q .; then
+    if docker compose -f docker-compose.lxc.yml ps -q 2>/dev/null | grep -q .; then
         log_info "Stopping existing containers..."
-        docker compose -f docker-compose.dev.yml down
+        docker compose -f docker-compose.lxc.yml down
     fi
 }
 
@@ -108,14 +108,14 @@ stop_existing_containers() {
 pull_images() {
     log_info "Pulling latest Docker images..."
     cd "${DOCKER_DIR}"
-    docker compose -f docker-compose.dev.yml pull
+    docker compose -f docker-compose.lxc.yml pull
 }
 
 # Start containers
 start_containers() {
     log_info "Starting Dispatcharr containers..."
     cd "${DOCKER_DIR}"
-    docker compose -f docker-compose.dev.yml up -d
+    docker compose -f docker-compose.lxc.yml up -d
     
     log_info "Waiting for containers to be healthy..."
     sleep 5
@@ -126,7 +126,7 @@ show_status() {
     cd "${DOCKER_DIR}"
     echo ""
     log_info "Container status:"
-    docker compose -f docker-compose.dev.yml ps
+    docker compose -f docker-compose.lxc.yml ps
     
     echo ""
     log_info "==================================================="
@@ -140,9 +140,9 @@ show_status() {
     log_info "                  (admin@admin.com / admin)"
     log_info "==================================================="
     echo ""
-    log_info "To view logs: cd ${DOCKER_DIR} && docker compose -f docker-compose.dev.yml logs -f"
-    log_info "To stop:      cd ${DOCKER_DIR} && docker compose -f docker-compose.dev.yml down"
-    log_info "To restart:   cd ${DOCKER_DIR} && docker compose -f docker-compose.dev.yml restart"
+    log_info "To view logs: cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml logs -f"
+    log_info "To stop:      cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml down"
+    log_info "To restart:   cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml restart"
     echo ""
 }
 
