@@ -84,6 +84,36 @@ def refresh_vod_content(account_id):
 def refresh_categories(account_id, client=None):
     account = M3UAccount.objects.get(id=account_id, is_active=True)
 
+    # Apply group-type exclude filters to VOD/Series category discovery.
+    # This keeps excluded categories out of the UI by preventing their relations
+    # from being (re)created; existing cleanup logic will remove old relations.
+    group_exclude_filters = [
+        (
+            re.compile(
+                f.regex_pattern,
+                (
+                    re.IGNORECASE
+                    if (f.custom_properties or {}).get("case_sensitive", True) == False
+                    else 0
+                ),
+            ),
+            f,
+        )
+        for f in account.filters.order_by("order")
+        if f.filter_type == "group" and f.exclude
+    ]
+
+    def is_category_excluded(category_name):
+        if not group_exclude_filters:
+            return False
+        for pattern, group_filter in group_exclude_filters:
+            if pattern.search(category_name or ""):
+                logger.debug(
+                    f"VOD category '{category_name}' excluded by filter pattern {group_filter.regex_pattern}"
+                )
+                return True
+        return False
+
     if not client:
         client = XtreamCodesClient(
             account.server_url,
@@ -96,6 +126,11 @@ def refresh_categories(account_id, client=None):
     # First, get the category list to properly map category IDs and names
     logger.info("Fetching movie categories from provider...")
     categories_data = client.get_vod_categories()
+    categories_data = [
+        c
+        for c in categories_data
+        if not is_category_excluded(c.get("category_name", "Unknown"))
+    ]
     category_map = batch_create_categories(categories_data, 'movie', account)
 
     # Create a mapping from provider category IDs to our category objects
@@ -110,6 +145,11 @@ def refresh_categories(account_id, client=None):
     # Get the category list to properly map category IDs and names
     logger.info("Fetching series categories from provider...")
     categories_data = client.get_series_categories()
+    categories_data = [
+        c
+        for c in categories_data
+        if not is_category_excluded(c.get("category_name", "Unknown"))
+    ]
     category_map = batch_create_categories(categories_data, 'series', account)
 
     # Create a mapping from provider category IDs to our category objects
