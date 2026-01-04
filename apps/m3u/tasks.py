@@ -1166,6 +1166,35 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
         release_task_lock("refresh_m3u_account_groups", account_id)
         return f"M3UAccount with ID={account_id} not found or inactive.", None
 
+    # Apply *group exclude* filters early so excluded groups/categories never appear in UI.
+    # This intentionally only applies exclude=True filters of type "group".
+    group_exclude_filters = [
+        (
+            re.compile(
+                f.regex_pattern,
+                (
+                    re.IGNORECASE
+                    if (f.custom_properties or {}).get("case_sensitive", True) == False
+                    else 0
+                ),
+            ),
+            f,
+        )
+        for f in account.filters.order_by("order")
+        if f.filter_type == "group" and f.exclude
+    ]
+
+    def is_group_excluded(group_name):
+        if not group_exclude_filters:
+            return False
+        for pattern, group_filter in group_exclude_filters:
+            if pattern.search(group_name or ""):
+                logger.debug(
+                    f"Group '{group_name}' excluded by filter pattern {group_filter.regex_pattern}"
+                )
+                return True
+        return False
+
     extinf_data = []
     groups = {"Default Group": {}}
 
@@ -1340,6 +1369,11 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                         for category in xc_categories:
                             cat_name = category.get("category_name", "Unknown Category")
                             cat_id = category.get("category_id", "0")
+                            if is_group_excluded(cat_name):
+                                logger.info(
+                                    f"Skipping excluded category: {cat_name} (ID: {cat_id})"
+                                )
+                                continue
                             logger.info(f"Adding category: {cat_name} (ID: {cat_id})")
                             groups[cat_name] = {
                                 "xc_id": cat_id,
@@ -1421,7 +1455,8 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                             logger.debug(
                                 f"Found new group for M3U account {account_id}: '{group_name}'"
                             )
-                        groups[group_name] = {}
+                        if not is_group_excluded(group_name):
+                            groups[group_name] = {}
 
                     extinf_data.append(parsed)
                 else:
