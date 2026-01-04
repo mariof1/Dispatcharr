@@ -88,6 +88,9 @@ class M3UAccount(models.Model):
     password = models.CharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     refresh_interval = models.IntegerField(default=0)
+    # Optional daily refresh time in HH:MM (24h). If set, Celery Beat will schedule
+    # a daily refresh at this time (system timezone) instead of interval-based refresh.
+    refresh_time = models.CharField(max_length=5, null=True, blank=True)
     refresh_task = models.ForeignKey(
         PeriodicTask, on_delete=models.SET_NULL, null=True, blank=True
     )

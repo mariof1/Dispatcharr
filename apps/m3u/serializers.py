@@ -139,6 +139,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
     auto_enable_new_groups_live = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_vod = serializers.BooleanField(required=False, write_only=True)
     auto_enable_new_groups_series = serializers.BooleanField(required=False, write_only=True)
+    refresh_time = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = M3UAccount
@@ -158,6 +159,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
             "locked",
             "channel_groups",
             "refresh_interval",
+            "refresh_time",
             "custom_properties",
             "account_type",
             "username",
@@ -177,6 +179,17 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 "allow_blank": True,
             },
         }
+
+    def validate_refresh_time(self, value):
+        if value in (None, ""):
+            return value
+
+        # Expect strict 24h HH:MM
+        import re
+
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", str(value)):
+            raise serializers.ValidationError("refresh_time must be in HH:MM (24-hour) format")
+        return value
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

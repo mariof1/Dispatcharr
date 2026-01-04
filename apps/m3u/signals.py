@@ -4,9 +4,11 @@ from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from .models import M3UAccount
 from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
-from django_celery_beat.models import PeriodicTask, IntervalSchedule
+from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
 import json
 import logging
+
+from core.models import CoreSettings
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +29,36 @@ def create_or_update_refresh_task(sender, instance, **kwargs):
     """
     task_name = f"m3u_account-refresh-{instance.id}"
 
-    interval, _ = IntervalSchedule.objects.get_or_create(
-        every=int(instance.refresh_interval),
-        period=IntervalSchedule.HOURS
-    )
+    refresh_time = (instance.refresh_time or "").strip()
 
-    # Task should be enabled only if refresh_interval != 0 AND account is active
-    should_be_enabled = (instance.refresh_interval != 0) and instance.is_active
+    interval = None
+    crontab = None
+
+    # If refresh_time is set, schedule daily at HH:MM (system timezone)
+    if refresh_time:
+        hour, minute = refresh_time.split(":")
+        crontab, _ = CrontabSchedule.objects.get_or_create(
+            minute=minute,
+            hour=hour,
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone=CoreSettings.get_system_time_zone(),
+        )
+    else:
+        # Fallback to interval-based scheduling
+        interval, _ = IntervalSchedule.objects.get_or_create(
+            every=int(instance.refresh_interval),
+            period=IntervalSchedule.HOURS,
+        )
+
+    # Enabled if active AND has a schedule configured
+    has_schedule = bool(refresh_time) or (instance.refresh_interval != 0)
+    should_be_enabled = bool(instance.is_active) and has_schedule
 
     defaults = {
         "interval": interval,
+        "crontab": crontab,
         "task": "apps.m3u.tasks.refresh_single_m3u_account",
         "kwargs": json.dumps({"account_id": instance.id}),
         "enabled": should_be_enabled,

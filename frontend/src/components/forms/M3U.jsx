@@ -59,6 +59,7 @@ const M3U = ({
       is_active: true,
       max_streams: 0,
       refresh_interval: 24,
+      refresh_time: '',
       account_type: 'XC',
       create_epg: false,
       username: '',
@@ -71,7 +72,6 @@ const M3U = ({
     validate: {
       name: isNotEmpty('Please select a name'),
       user_agent: isNotEmpty('Please select a user-agent'),
-      refresh_interval: isNotEmpty('Please specify a refresh interval'),
     },
   });
 
@@ -86,6 +86,7 @@ const M3U = ({
         user_agent: m3uAccount.user_agent ? `${m3uAccount.user_agent}` : '0',
         is_active: m3uAccount.is_active,
         refresh_interval: m3uAccount.refresh_interval,
+        refresh_time: m3uAccount.refresh_time ?? '',
         account_type: m3uAccount.account_type,
         username: m3uAccount.username ?? '',
         password: '',
@@ -392,6 +393,20 @@ const M3U = ({
                 allowNegative={false}
                 {...form.getInputProps('refresh_interval')}
                 key={form.key('refresh_interval')}
+              />
+
+              <TextInput
+                label="Refresh Time (HH:MM)"
+                type="time"
+                description={
+                  <>
+                    Refresh once daily at this time
+                    <br />
+                    (leave empty to use interval or disable)
+                  </>
+                }
+                {...form.getInputProps('refresh_time')}
+                key={form.key('refresh_time')}
               />
 
               <NumberInput
