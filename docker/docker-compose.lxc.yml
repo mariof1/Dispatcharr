@@ -9,9 +9,9 @@ services:
     volumes:
       - ../:/app
       - ./data:/data
-      # Use named volumes to avoid permission issues with mounted code
-      - dispatcharr_node_modules:/app/frontend/node_modules
-      - dispatcharr_vite_cache:/app/frontend/.vite
+    tmpfs:
+      # Use tmpfs for Vite cache to avoid permission issues
+      - /app/frontend/node_modules/.vite:uid=1000,gid=1000
     environment:
       - DISPATCHARR_ENV=dev
       - REDIS_HOST=localhost
@@ -48,5 +48,3 @@ services:
 
 volumes:
   dispatcharr_dev_pgadmin:
-  dispatcharr_node_modules:
-  dispatcharr_vite_cache:
