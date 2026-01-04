@@ -26,11 +26,61 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if running with sudo/root
+# Pull latest changes from git
+pull_latest_code() {
+    log_info "Pulling latest code from git..."
+    cd "${SCRIPT_DIR}"
+    
+    # Check if this is a git repository
+    if [ -d .git ]; then
+        # Stash any local changes
+        if ! git diff-index --quiet HEAD --; then
+            log_warn "Local changes detected, stashing them..."
+            git stash
+        fi
+        
+        # Pull latest changes
+        git pull origin dev || {
+            log_warn "Failed to pull from origin/dev, continuing with existing code"
+        }
+    else
+        log_warn "Not a git repository, skipping pull"
+    fi
+}
+
+# Check if user is in docker group
+check_docker_group() {
+    local user="${SUDO_USER:-$USER}"
+    
+    if groups "$user" | grep -q '\bdocker\b'; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Wrapper to run docker commands with proper permissions
+run_docker() {
+    local user="${SUDO_USER:-$USER}"
+    
+    if [[ $EUID -eq 0 ]] && [[ -n "${SUDO_USER:-}" ]]; then
+        # Running as sudo, use sg to run as user with docker group
+        su - "$user" -c "cd '$PWD' && $*"
+    else
+        # Already running as correct user
+        eval "$@"
+    fi
+}
+
+# Check permissions and re-execute if needed
 check_permissions() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "This script must be run with sudo or as root"
-        exit 1
+    local user="${SUDO_USER:-$USER}"
+    
+    # If not root and not in docker group, need sudo
+    if [[ $EUID -ne 0 ]] && ! check_docker_group; then
+        log_warn "Docker not installed or user not in docker group, will install..."
+        log_info "Re-running with sudo..."
+        exec sudo bash "$0" "$@"
     fi
 }
 
@@ -42,6 +92,12 @@ install_docker() {
     fi
 
     log_info "Installing Docker..."
+    
+    # Ensure we're root for installation
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Need root privileges to install Docker"
+        exit 1
+    fi
     
     # Install prerequisites
     apt-get update
@@ -74,10 +130,25 @@ install_docker() {
 
 # Add current user to docker group (if not root)
 setup_docker_permissions() {
-    if [[ -n "${SUDO_USER:-}" ]] && [[ "${SUDO_USER}" != "root" ]]; then
-        log_info "Adding user ${SUDO_USER} to docker group..."
-        usermod -aG docker "${SUDO_USER}"
-        log_warn "User ${SUDO_USER} added to docker group. You may need to log out and back in for this to take effect."
+    local user="${SUDO_USER:-$USER}"
+    
+    # Skip if running as actual root (not sudo)
+    if [[ "$user" == "root" ]]; then
+        return 0
+    fi
+    
+    if ! check_docker_group; then
+        log_info "Adding user ${user} to docker group..."
+        
+        if [[ $EUID -ne 0 ]]; then
+            log_error "Need root privileges to add user to docker group"
+            exit 1
+        fi
+        
+        usermod -aG docker "${user}"
+        log_info "User ${user} added to docker group"
+    else
+        log_info "User ${user} is already in docker group"
     fi
 }
 
@@ -87,8 +158,9 @@ setup_directories() {
     mkdir -p "${DATA_DIR}"
     
     # Set appropriate permissions if running via sudo
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        chown -R "${SUDO_USER}:${SUDO_USER}" "${DATA_DIR}"
+    local user="${SUDO_USER:-$USER}"
+    if [[ $EUID -eq 0 ]] && [[ "$user" != "root" ]]; then
+        chown -R "${user}:${user}" "${DATA_DIR}"
     fi
 }
 
@@ -98,9 +170,9 @@ stop_existing_containers() {
     
     cd "${DOCKER_DIR}"
     
-    if docker compose -f docker-compose.lxc.yml ps -q 2>/dev/null | grep -q .; then
+    if run_docker "docker compose -f docker-compose.lxc.yml ps -q 2>/dev/null | grep -q ."; then
         log_info "Stopping existing containers..."
-        docker compose -f docker-compose.lxc.yml down
+        run_docker "docker compose -f docker-compose.lxc.yml down"
     fi
 }
 
@@ -108,14 +180,14 @@ stop_existing_containers() {
 pull_images() {
     log_info "Pulling latest Docker images..."
     cd "${DOCKER_DIR}"
-    docker compose -f docker-compose.lxc.yml pull
+    run_docker "docker compose -f docker-compose.lxc.yml pull"
 }
 
 # Start containers
 start_containers() {
     log_info "Starting Dispatcharr containers..."
     cd "${DOCKER_DIR}"
-    docker compose -f docker-compose.lxc.yml up -d
+    run_docker "docker compose -f docker-compose.lxc.yml up -d"
     
     log_info "Waiting for containers to be healthy..."
     sleep 5
@@ -126,7 +198,7 @@ show_status() {
     cd "${DOCKER_DIR}"
     echo ""
     log_info "Container status:"
-    docker compose -f docker-compose.lxc.yml ps
+    run_docker "docker compose -f docker-compose.lxc.yml ps"
     
     echo ""
     log_info "==================================================="
@@ -140,18 +212,26 @@ show_status() {
     log_info "                  (admin@admin.com / admin)"
     log_info "==================================================="
     echo ""
-    log_info "To view logs: cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml logs -f"
-    log_info "To stop:      cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml down"
-    log_info "To restart:   cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml restart"
+    log_info "Useful commands:"
+    log_info "  View logs:  cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml logs -f"
+    log_info "  Stop:       cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml down"
+    log_info "  Restart:    cd ${DOCKER_DIR} && docker compose -f docker-compose.lxc.yml restart"
+    log_info "  Update:     cd ${SCRIPT_DIR} && ./lxc_setup.sh"
     echo ""
 }
 
 # Main execution
 main() {
-    log_info "Starting Dispatcharr LXC Setup..."
+    log_info "🚀 Starting Dispatcharr LXC Setup..."
     echo ""
     
+    # Check permissions first (will re-exec with sudo if needed)
     check_permissions
+    
+    # Pull latest code
+    pull_latest_code
+    
+    # Install and configure
     install_docker
     setup_docker_permissions
     setup_directories
@@ -160,7 +240,15 @@ main() {
     start_containers
     show_status
     
-    log_info "Setup complete! 🎉"
+    echo ""
+    log_info "✅ Setup complete! Dispatcharr is ready to use! 🎉"
+    
+    local user="${SUDO_USER:-$USER}"
+    if [[ $EUID -eq 0 ]] && [[ "$user" != "root" ]]; then
+        echo ""
+        log_warn "Note: Future updates can be run without sudo:"
+        log_info "  Just run: ./lxc_setup.sh"
+    fi
 }
 
 # Run main function
