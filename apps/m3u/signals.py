@@ -1,4 +1,5 @@
 # apps/m3u/signals.py
+from django.db import IntegrityError, transaction
 from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from .models import M3UAccount
@@ -34,37 +35,35 @@ def create_or_update_refresh_task(sender, instance, **kwargs):
     # Task should be enabled only if refresh_interval != 0 AND account is active
     should_be_enabled = (instance.refresh_interval != 0) and instance.is_active
 
-    # First check if the task already exists to avoid validation errors
+    defaults = {
+        "interval": interval,
+        "task": "apps.m3u.tasks.refresh_single_m3u_account",
+        "kwargs": json.dumps({"account_id": instance.id}),
+        "enabled": should_be_enabled,
+    }
+
+    # Race-safe: concurrent saves can attempt to create the same PeriodicTask.
+    # Use update_or_create inside a transaction and fall back to fetching/updating
+    # if the insert loses the unique-name race.
     try:
+        with transaction.atomic():
+            task, _created = PeriodicTask.objects.update_or_create(
+                name=task_name,
+                defaults=defaults,
+            )
+    except IntegrityError:
         task = PeriodicTask.objects.get(name=task_name)
-        # Task exists, just update it
-        updated_fields = []
+        needs_save = False
+        for field, value in defaults.items():
+            if getattr(task, field) != value:
+                setattr(task, field, value)
+                needs_save = True
+        if needs_save:
+            task.save(update_fields=list(defaults.keys()))
 
-        if task.enabled != should_be_enabled:
-            task.enabled = should_be_enabled
-            updated_fields.append("enabled")
-
-        if task.interval != interval:
-            task.interval = interval
-            updated_fields.append("interval")
-
-        if updated_fields:
-            task.save(update_fields=updated_fields)
-
-        # Ensure instance has the task
-        if instance.refresh_task_id != task.id:
-            M3UAccount.objects.filter(id=instance.id).update(refresh_task=task)
-
-    except PeriodicTask.DoesNotExist:
-        # Create new task if it doesn't exist
-        refresh_task = PeriodicTask.objects.create(
-            name=task_name,
-            interval=interval,
-            task="apps.m3u.tasks.refresh_single_m3u_account",
-            kwargs=json.dumps({"account_id": instance.id}),
-            enabled=should_be_enabled,
-        )
-        M3UAccount.objects.filter(id=instance.id).update(refresh_task=refresh_task)
+    # Ensure instance has the task (avoid recursion by updating via queryset)
+    if instance.refresh_task_id != task.id:
+        M3UAccount.objects.filter(id=instance.id).update(refresh_task=task)
 
 @receiver(post_delete, sender=M3UAccount)
 def delete_refresh_task(sender, instance, **kwargs):
