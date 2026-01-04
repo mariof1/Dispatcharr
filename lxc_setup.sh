@@ -26,13 +26,20 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Pull latest changes from git
+# Pull latest changes from git and re-execute if script changed
 pull_latest_code() {
     log_info "Pulling latest code from git..."
     cd "${SCRIPT_DIR}"
     
     # Check if this is a git repository
     if [ -d .git ]; then
+        # Get current script hash
+        local script_path="$0"
+        local old_hash=""
+        if [ -f "$script_path" ]; then
+            old_hash=$(md5sum "$script_path" 2>/dev/null | cut -d' ' -f1)
+        fi
+        
         # Stash any local changes
         if ! git diff-index --quiet HEAD --; then
             log_warn "Local changes detected, stashing them..."
@@ -40,9 +47,27 @@ pull_latest_code() {
         fi
         
         # Pull latest changes
-        git pull origin dev || {
+        if git pull origin dev; then
+            # Check if script changed
+            local new_hash=""
+            if [ -f "$script_path" ]; then
+                new_hash=$(md5sum "$script_path" 2>/dev/null | cut -d' ' -f1)
+            fi
+            
+            # If script changed, re-execute it
+            if [ -n "$old_hash" ] && [ -n "$new_hash" ] && [ "$old_hash" != "$new_hash" ]; then
+                log_info "Script updated! Re-executing with new version..."
+                echo ""
+                # Re-execute with same arguments
+                if [[ $EUID -eq 0 ]]; then
+                    exec bash "$script_path" "$@"
+                else
+                    exec bash "$script_path" "$@"
+                fi
+            fi
+        else
             log_warn "Failed to pull from origin/dev, continuing with existing code"
-        }
+        fi
     else
         log_warn "Not a git repository, skipping pull"
     fi
