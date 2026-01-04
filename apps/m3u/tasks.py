@@ -1311,15 +1311,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                         auth_result = xc_client.authenticate()
                         logger.debug(f"Authentication response: {auth_result}")
 
-                        # Queue async profile refresh task to run in background
-                        # This prevents any delay in the main refresh process
-                        try:
-                            logger.info(f"Queueing background profile refresh for account {account.name}")
-                            refresh_account_profiles.delay(account.id)
-                        except Exception as e:
-                            logger.warning(f"Failed to queue profile refresh task: {str(e)}")
-                            # Don't fail the main refresh if profile refresh can't be queued
-
                     except Exception as e:
                         error_msg = f"Failed to authenticate with XC server: {str(e)}"
                         logger.error(error_msg)
@@ -1378,6 +1369,20 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False):
                             groups[cat_name] = {
                                 "xc_id": cat_id,
                             }
+
+                        # Queue async profile refresh task after categories are fetched.
+                        # Some providers enforce low max_connections; avoiding concurrent calls
+                        # here reduces intermittent 502s during refresh.
+                        try:
+                            logger.info(
+                                f"Queueing background profile refresh for account {account.name}"
+                            )
+                            refresh_account_profiles.apply_async(args=[account.id], countdown=5)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to queue profile refresh task: {str(e)}"
+                            )
+                            # Don't fail the main refresh if profile refresh can't be queued
                     except Exception as e:
                         error_msg = f"Failed to get categories from XC server: {str(e)}"
                         logger.error(error_msg)
