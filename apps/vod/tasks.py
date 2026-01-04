@@ -32,8 +32,20 @@ def refresh_vod_content(account_id):
         logger.info(f"Starting batch VOD refresh for account {account.name}")
         start_time = timezone.now()
 
+        # If the provider temporarily returns empty lists, the scan-based cleanup
+        # (stale_days=0) would delete all existing relations/content. Track whether
+        # this account currently has VOD relations so we can avoid destructive cleanup
+        # on a likely failed refresh.
+        had_existing_vod_relations = (
+            M3UMovieRelation.objects.filter(m3u_account=account).exists()
+            or M3USeriesRelation.objects.filter(m3u_account=account).exists()
+        )
+
         # Send start notification
         send_m3u_update(account_id, "vod_refresh", 0, status="processing")
+
+        fetched_movies = 0
+        fetched_series = 0
 
         with XtreamCodesClient(
             account.server_url,
@@ -51,10 +63,22 @@ def refresh_vod_content(account_id):
             }
 
             # Refresh movies with batch processing (pass scan start time)
-            refresh_movies(client, account, movie_categories, relations, scan_start_time=start_time)
+            fetched_movies = refresh_movies(
+                client,
+                account,
+                movie_categories,
+                relations,
+                scan_start_time=start_time,
+            )
 
             # Refresh series with batch processing (pass scan start time)
-            refresh_series(client, account, series_categories, relations, scan_start_time=start_time)
+            fetched_series = refresh_series(
+                client,
+                account,
+                series_categories,
+                relations,
+                scan_start_time=start_time,
+            )
 
         end_time = timezone.now()
         duration = (end_time - start_time).total_seconds()
@@ -62,6 +86,20 @@ def refresh_vod_content(account_id):
         logger.info(f"Batch VOD refresh completed for account {account.name} in {duration:.2f} seconds")
 
         # Cleanup orphaned VOD content after refresh (scoped to this account only)
+        # Guard: if provider returned empty lists but we previously had relations,
+        # skip destructive cleanup to avoid wiping categories/content due to upstream issues.
+        if (
+            had_existing_vod_relations
+            and (fetched_movies == 0 and fetched_series == 0)
+        ):
+            msg = (
+                "Provider returned 0 movies and 0 series; skipping VOD cleanup to avoid data loss. "
+                "This usually indicates a temporary provider/API failure."
+            )
+            logger.error(msg)
+            send_m3u_update(account_id, "vod_refresh", 100, status="error", message=msg)
+            return msg
+
         logger.info(f"Starting cleanup of orphaned VOD content for account {account.name}")
         cleanup_result = cleanup_orphaned_vod_content(account_id=account_id, scan_start_time=start_time)
         logger.info(f"VOD cleanup completed: {cleanup_result}")
@@ -216,6 +254,8 @@ def refresh_movies(client, account, categories_by_provider, relations, scan_star
 
     logger.info(f"Completed processing all {total_movies} movies in {total_chunks} chunks")
 
+    return total_movies
+
 
 def refresh_series(client, account, categories_by_provider, relations, scan_start_time=None):
     """Refresh series content using single API call for all series"""
@@ -270,10 +310,26 @@ def refresh_series(client, account, categories_by_provider, relations, scan_star
 
     logger.info(f"Completed processing all {total_series} series in {total_chunks} chunks")
 
+    return total_series
+
 
 def batch_create_categories(categories_data, category_type, account):
     """Create categories in batch and return a mapping"""
     category_names = [cat.get('category_name', 'Unknown') for cat in categories_data]
+
+    # Safety: if provider returns an empty list, do NOT delete existing relations/categories.
+    # Returning an empty mapping is fine; refresh_movies/refresh_series will still keep
+    # existing UI categories intact and avoid mass-deletion cascades.
+    if not category_names:
+        logger.warning(
+            f"Provider returned 0 {category_type} categories for account {account.id}; "
+            "skipping category sync/cleanup to avoid deleting existing categories."
+        )
+        existing = VODCategory.objects.filter(
+            category_type=category_type,
+            m3u_relations__m3u_account=account,
+        ).distinct()
+        return {cat.name: cat for cat in existing}
 
     relations_to_create = []
 
