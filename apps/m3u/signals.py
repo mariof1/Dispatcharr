@@ -4,11 +4,14 @@ from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 from .models import M3UAccount
 from .tasks import refresh_single_m3u_account, refresh_m3u_groups, delete_m3u_refresh_task_by_id
-from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
+from django_celery_beat.models import PeriodicTask, IntervalSchedule
 import json
 import logging
 
 from core.models import CoreSettings
+from datetime import timedelta
+from zoneinfo import ZoneInfo
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -31,37 +34,47 @@ def create_or_update_refresh_task(sender, instance, **kwargs):
 
     refresh_time = (instance.refresh_time or "").strip()
 
+    # Interval-based scheduling is the source of truth. refresh_time (if set)
+    # anchors the first run (start_time) so the interval repeats from that time.
     interval = None
-    crontab = None
-
-    # If refresh_time is set, schedule daily at HH:MM (system timezone)
-    if refresh_time:
-        hour, minute = refresh_time.split(":")
-        crontab, _ = CrontabSchedule.objects.get_or_create(
-            minute=minute,
-            hour=hour,
-            day_of_week="*",
-            day_of_month="*",
-            month_of_year="*",
-            timezone=CoreSettings.get_system_time_zone(),
-        )
-    else:
-        # Fallback to interval-based scheduling
+    start_time = None
+    if int(instance.refresh_interval) != 0:
         interval, _ = IntervalSchedule.objects.get_or_create(
             every=int(instance.refresh_interval),
             period=IntervalSchedule.HOURS,
         )
 
-    # Enabled if active AND has a schedule configured
-    has_schedule = bool(refresh_time) or (instance.refresh_interval != 0)
+        if refresh_time:
+            hour_str, minute_str = refresh_time.split(":")
+            hour = int(hour_str)
+            minute = int(minute_str)
+
+            tz = ZoneInfo(CoreSettings.get_system_time_zone())
+            now = timezone.now().astimezone(tz)
+            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate <= now:
+                candidate = candidate + timedelta(days=1)
+            start_time = candidate
+
+    # Enabled if active AND refresh_interval configured (>0)
+    has_schedule = int(instance.refresh_interval) != 0
     should_be_enabled = bool(instance.is_active) and has_schedule
+
+    existing = (
+        PeriodicTask.objects.filter(name=task_name)
+        .only("id", "interval_id", "start_time")
+        .first()
+    )
+    old_interval_id = existing.interval_id if existing else None
+    old_start_time = existing.start_time if existing else None
 
     defaults = {
         "interval": interval,
-        "crontab": crontab,
+        "crontab": None,
         "task": "apps.m3u.tasks.refresh_single_m3u_account",
         "kwargs": json.dumps({"account_id": instance.id}),
         "enabled": should_be_enabled,
+        "start_time": start_time,
     }
 
     # Race-safe: concurrent saves can attempt to create the same PeriodicTask.
@@ -82,6 +95,13 @@ def create_or_update_refresh_task(sender, instance, **kwargs):
                 needs_save = True
         if needs_save:
             task.save(update_fields=list(defaults.keys()))
+
+    # If schedule anchor changed, reset last_run_at so beat re-aligns cadence.
+    if (
+        old_interval_id is not None
+        and (old_interval_id != task.interval_id or old_start_time != task.start_time)
+    ):
+        PeriodicTask.objects.filter(id=task.id).update(last_run_at=None, total_run_count=0)
 
     # Ensure instance has the task (avoid recursion by updating via queryset)
     if instance.refresh_task_id != task.id:

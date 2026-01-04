@@ -396,13 +396,13 @@ const M3U = ({
               />
 
               <TextInput
-                label="Refresh Time (HH:MM)"
+                label="Start Time (HH:MM)"
                 type="time"
                 description={
                   <>
-                    Refresh once daily at this time
+                    Optional start time for the interval schedule
                     <br />
-                    (leave empty to use interval or disable)
+                    (leave empty = start immediately; interval 0 disables)
                   </>
                 }
                 {...form.getInputProps('refresh_time')}
