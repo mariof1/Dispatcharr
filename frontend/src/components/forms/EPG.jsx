@@ -134,6 +134,9 @@ const EPG = ({ epg = null, isOpen, onClose }) => {
               {...form.getInputProps('refresh_interval')}
               key={form.key('refresh_interval')}
               min={0}
+              step={1}
+              allowDecimal={false}
+              allowNegative={false}
             />
           </Stack>
 

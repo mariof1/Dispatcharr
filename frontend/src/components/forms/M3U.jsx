@@ -386,6 +386,10 @@ const M3U = ({
                     (0 to disable automatic refreshes)
                   </>
                 }
+                min={0}
+                step={1}
+                allowDecimal={false}
+                allowNegative={false}
                 {...form.getInputProps('refresh_interval')}
                 key={form.key('refresh_interval')}
               />
