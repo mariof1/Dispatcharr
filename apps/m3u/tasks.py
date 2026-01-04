@@ -11,7 +11,7 @@ from celery.result import AsyncResult
 from celery import shared_task, current_app, group
 from django.conf import settings
 from django.core.cache import cache
-from django.db import transaction
+from django.db import transaction, models
 from .models import M3UAccount
 from apps.channels.models import Stream, ChannelGroup, ChannelGroupM3UAccount
 from asgiref.sync import async_to_sync
@@ -1089,6 +1089,70 @@ def cleanup_streams(account_id, scan_start_time=timezone.now):
 
     # Return the total count of deleted streams
     return total_deleted
+
+
+def cleanup_empty_groups(account_id):
+    """
+    Remove groups that have no streams for this M3U account.
+    This handles the case where filters excluded all streams from certain groups.
+    """
+    from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
+    
+    account = M3UAccount.objects.get(id=account_id, is_active=True)
+    
+    # Get all group relationships for this account
+    group_relationships = ChannelGroupM3UAccount.objects.filter(
+        m3u_account=account,
+        enabled=True
+    ).select_related('channel_group')
+    
+    empty_group_ids = []
+    empty_group_names = []
+    
+    for rel in group_relationships:
+        group = rel.channel_group
+        # Check if this group has any streams from this account
+        stream_count = Stream.objects.filter(
+            m3u_account=account,
+            channel_group=group
+        ).count()
+        
+        if stream_count == 0:
+            empty_group_ids.append(group.id)
+            empty_group_names.append(group.name)
+            logger.debug(f"Group '{group.name}' has no streams for account {account_id}")
+    
+    if empty_group_ids:
+        # Delete the ChannelGroupM3UAccount relationships for empty groups
+        ChannelGroupM3UAccount.objects.filter(
+            m3u_account=account,
+            channel_group_id__in=empty_group_ids
+        ).delete()
+        
+        logger.info(
+            f"Removed {len(empty_group_ids)} empty groups for M3U account {account_id}: {', '.join(empty_group_names[:10])}"
+            + ("..." if len(empty_group_names) > 10 else "")
+        )
+        
+        # Check for orphaned groups (groups with no M3U account relationships)
+        orphaned_groups = ChannelGroup.objects.filter(
+            id__in=empty_group_ids
+        ).annotate(
+            m3u_count=models.Count('m3u_accounts')
+        ).filter(m3u_count=0)
+        
+        orphaned_count = orphaned_groups.count()
+        if orphaned_count > 0:
+            orphaned_group_names = list(orphaned_groups.values_list('name', flat=True))
+            orphaned_groups.delete()
+            logger.info(
+                f"Deleted {orphaned_count} orphaned groups with no account relationships: {', '.join(orphaned_group_names[:10])}"
+                + ("..." if len(orphaned_group_names) > 10 else "")
+            )
+        
+        return len(empty_group_ids)
+    
+    return 0
 
 
 @shared_task
@@ -2808,6 +2872,11 @@ def refresh_single_m3u_account(account_id):
 
         # Now run cleanup
         streams_deleted = cleanup_streams(account_id, refresh_start_timestamp)
+        
+        # Clean up empty groups (groups with no streams due to filters)
+        empty_groups_removed = cleanup_empty_groups(account_id)
+        if empty_groups_removed > 0:
+            logger.info(f"Removed {empty_groups_removed} empty groups for account {account_id}")
 
         # Run auto channel sync after successful refresh
         auto_sync_message = ""
